@@ -5,9 +5,13 @@ import com.sgarden.dto.ProductRequest;
 import com.sgarden.dto.ProductStatsResponse;
 import com.sgarden.model.Product;
 import com.sgarden.repository.ProductRepository;
+import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.aggregation.AggregationResults;
+import org.springframework.data.mongodb.core.aggregation.ConditionalOperators;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.TextCriteria;
@@ -18,7 +22,6 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 
 import java.util.ArrayList;
-import java.util.DoubleSummaryStatistics;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -103,23 +106,45 @@ public class ProductService {
     }
 
     public ProductStatsResponse getProductStats() {
-        List<Product> all = productRepository.findAll();
-        long totalCount = all.size();
+        AggregationResults<Document> overviewResult = mongoTemplate.aggregate(
+            Aggregation.newAggregation(
+                Aggregation.group()
+                    .count().as("totalCount")
+                    .avg("price").as("averagePrice")
+                    .min("price").as("minPrice")
+                    .max("price").as("maxPrice")
+            ),
+            Product.class, Document.class
+        );
 
-        DoubleSummaryStatistics priceStats = all.stream()
-                .filter(p -> p.getPrice() != null)
-                .mapToDouble(Product::getPrice)
-                .summaryStatistics();
+        Document overview = overviewResult.getUniqueMappedResult();
+        long totalCount     = overview != null ? toL(overview.get("totalCount"))   : 0L;
+        double averagePrice = overview != null ? toD(overview.get("averagePrice")) : 0.0;
+        Double minPrice     = overview != null ? toD(overview.get("minPrice"))     : null;
+        Double maxPrice     = overview != null ? toD(overview.get("maxPrice"))     : null;
 
-        Map<String, Long> categoryCount = all.stream()
-                .filter(p -> p.getCategory() != null)
-                .collect(Collectors.groupingBy(Product::getCategory, Collectors.counting()));
+        Map<String, Long> categoryCount = mongoTemplate.aggregate(
+            Aggregation.newAggregation(
+                Aggregation.project()
+                    .and(ConditionalOperators.ifNull("category").then("uncategorized")).as("category"),
+                Aggregation.group("category").count().as("count")
+            ),
+            Product.class, Document.class
+        ).getMappedResults().stream().collect(Collectors.toMap(
+            doc -> doc.getString("_id"),
+            doc -> toL(doc.get("count"))
+        ));
 
-        double averagePrice = priceStats.getCount() > 0 ? priceStats.getAverage() : 0.0;
-        Double minPrice = priceStats.getCount() > 0 ? priceStats.getMin() : null;
-        Double maxPrice = priceStats.getCount() > 0 ? priceStats.getMax() : null;
-
+        log.info("Computed product stats: totalCount={}", totalCount);
         return new ProductStatsResponse(totalCount, averagePrice, minPrice, maxPrice, categoryCount);
+    }
+
+    private static long toL(Object v) {
+        return v instanceof Number n ? n.longValue() : 0L;
+    }
+
+    private static Double toD(Object v) {
+        return v instanceof Number n ? n.doubleValue() : null;
     }
 
     public List<Product> searchProducts(String q, String category, Double minPrice, Double maxPrice) {
