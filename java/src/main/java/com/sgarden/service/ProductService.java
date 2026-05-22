@@ -1,5 +1,6 @@
 package com.sgarden.service;
 
+import com.sgarden.dto.PagedResponse;
 import com.sgarden.dto.ProductRequest;
 import com.sgarden.dto.ProductStatsResponse;
 import com.sgarden.model.Product;
@@ -12,17 +13,25 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.TextCriteria;
 import org.springframework.stereotype.Service;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+
 import java.util.ArrayList;
 import java.util.DoubleSummaryStatistics;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
 public class ProductService {
 
     private static final Logger log = LoggerFactory.getLogger(ProductService.class);
+
+    private static final Set<String> SORTABLE_FIELDS =
+        Set.of("name", "price", "stock", "category", "createdAt", "updatedAt");
 
     private final ProductRepository productRepository;
     private final MongoTemplate mongoTemplate;
@@ -32,9 +41,37 @@ public class ProductService {
         this.mongoTemplate = mongoTemplate;
     }
 
-    public List<Product> getAllProducts() {
-        log.info("Fetching all products");
-        return productRepository.findAll();
+    public PagedResponse<Product> getAllProducts(int page, int limit, String sort, String order) {
+        if (page < 1) {
+            throw new IllegalArgumentException("page must be 1 or greater");
+        }
+        if (!SORTABLE_FIELDS.contains(sort)) {
+            throw new IllegalArgumentException(
+                "Invalid sort field '" + sort + "'. Allowed: " + SORTABLE_FIELDS);
+        }
+        if (!order.equalsIgnoreCase("asc") && !order.equalsIgnoreCase("desc")) {
+            throw new IllegalArgumentException("order must be 'asc' or 'desc'");
+        }
+        if (limit > 100) {
+            throw new IllegalArgumentException("limit must not exceed 100");
+        }
+
+        Sort.Direction dir = order.equalsIgnoreCase("desc")
+            ? Sort.Direction.DESC
+            : Sort.Direction.ASC;
+
+        // page is 1-indexed externally; PageRequest is 0-indexed internally
+        Page<Product> result = productRepository.findAll(
+            PageRequest.of(page - 1, limit, Sort.by(dir, sort))
+        );
+
+        log.info("Fetching products page={}, limit={}, sort={} {}", page, limit, sort, order);
+        return new PagedResponse<>(
+            result.getContent(),
+            page,
+            limit,
+            result.getTotalElements()
+        );
     }
 
     public Optional<Product> getProductById(String id) {
